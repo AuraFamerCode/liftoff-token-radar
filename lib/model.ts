@@ -98,7 +98,7 @@ export const MODEL: ModelConstants = {
   bench_cap: 3.5,
   ratio_low: 0.02,
   ratio_high: 12,
-  early_rows: 220,
+  early_rows: 2000,
   live_rows: 40,
 };
 
@@ -108,14 +108,20 @@ export interface CategoryBench {
   category: string;
   peers: number;
   median_ratio: number | null;
+  q1: number | null;
+  q3: number | null;
   benchmark: number;
+  benchmark_low?: number;
+  benchmark_high?: number;
   source: 'category' | 'global';
+  basis: 'category' | 'sector' | 'global';
+  sector: string;
   peer_names: string[];
 }
 
 export interface ImpliedBreakdown {
   bench: number;
-  bench_source: 'category' | 'global';
+  bench_source: 'category' | 'sector' | 'global';
   peers: number;
   median_ratio: number | null;
   growth_pct: number;
@@ -157,6 +163,9 @@ export interface BoardRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  value_low_usd: number;
+  value_high_usd: number;
+  confidence: 'high' | 'medium' | 'low';
   implied_multiple: number;
   token_status: 'pre-token';
   tier: 'watchlist' | 'early';
@@ -186,6 +195,8 @@ export interface RadarData {
   model_version: string;
   generated_by: string;
   watchlist_size: number;
+  watchlist_covered: number;
+  pre_token_total: number;
   board_size: number;
   early_size: number;
   live_size: number;
@@ -225,6 +236,35 @@ function median(nums: number[]): number {
   const mid = Math.floor(sorted.length / 2);
   if (sorted.length % 2 === 1) return sorted[mid];
   return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function quantile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const pos = (sorted.length - 1) * p;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  if (base + 1 < sorted.length) {
+    return sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+  }
+  return sorted[base];
+}
+
+export function categoryToSector(category: string | null): string {
+  if (!category) return 'OTHER';
+  const c = category.toLowerCase();
+  if (c.includes('dex') || c.includes('swap') || c.includes('amm')) return 'DEX';
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral') || c.includes('credit')) return 'LENDING';
+  if (c.includes('yield') || c.includes('vault') || c.includes('curator') || c.includes('allocator') || c.includes('aggregator') || c.includes('basis')) return 'YIELD';
+  if (c.includes('rwa') || c.includes('real world')) return 'RWA';
+  if (c.includes('bridge')) return 'BRIDGE';
+  if (c.includes('stak') || c.includes('restak')) return 'STAKING';
+  if (c.includes('chain') || c.includes('rollup') || c.includes('l2')) return 'CHAIN';
+  if (c.includes('perpetual') || c.includes('derivative')) return 'PERPS';
+  if (c.includes('stable')) return 'STABLECOIN';
+  if (c.includes('insurance')) return 'INSURANCE';
+  if (c.includes('payment')) return 'PAYMENTS';
+  return 'OTHER';
 }
 
 function isPreToken(p: SnapshotProtocol): boolean {
@@ -405,9 +445,36 @@ export function categoryBenchmarks(snapshot: Snapshot, model: ModelConstants = M
     }
   }
 
-  const allRatios = validPeers.map(p => p.ratio);
+  const allRatios = validPeers.map(p => p.ratio).sort((a, b) => a - b);
   const globalMed = median(allRatios);
   const clampedGlobal = clamp(globalMed, model.bench_floor, model.bench_cap);
+
+  // Group peers by sector
+  const sectorPeersMap = new Map<string, TokenPeer[]>();
+  for (const item of validPeers) {
+    const sec = categoryToSector(item.protocol.category);
+    let list = sectorPeersMap.get(sec);
+    if (!list) {
+      list = [];
+      sectorPeersMap.set(sec, list);
+    }
+    list.push(item);
+  }
+
+  // Compute sector benchmarks
+  const sectorBenchMap = new Map<string, number>();
+  const ALL_SECTORS = ['DEX', 'LENDING', 'YIELD', 'RWA', 'BRIDGE', 'STAKING', 'CHAIN', 'PERPS', 'STABLECOIN', 'INSURANCE', 'PAYMENTS', 'OTHER'];
+  for (const sec of ALL_SECTORS) {
+    const sPeers = sectorPeersMap.get(sec) || [];
+    const sn = sPeers.length;
+    if (sn > 0) {
+      const sMed = median(sPeers.map(p => p.ratio));
+      const sRaw = (sn * sMed + model.bench_shrink * globalMed) / (sn + model.bench_shrink);
+      sectorBenchMap.set(sec, clamp(sRaw, model.bench_floor, model.bench_cap));
+    } else {
+      sectorBenchMap.set(sec, clampedGlobal);
+    }
+  }
 
   // Group peers by category
   const peersByCat = new Map<string, TokenPeer[]>();
@@ -431,37 +498,70 @@ export function categoryBenchmarks(snapshot: Snapshot, model: ModelConstants = M
 
   for (const cat of allCategories) {
     const peers = peersByCat.get(cat) || [];
-    if (peers.length > 0) {
-      const catRatios = peers.map(p => p.ratio);
-      const catMed = median(catRatios);
-      const n = peers.length;
-      const sh = model.bench_shrink;
-      const rawBench = (n * catMed + sh * globalMed) / (n + sh);
-      const benchmark = clamp(rawBench, model.bench_floor, model.bench_cap);
+    const sec = categoryToSector(cat);
+    const secBench = sectorBenchMap.get(sec) ?? clampedGlobal;
+    const n = peers.length;
 
-      const topPeers = [...peers]
-        .sort((a, b) => (b.protocol.mcap_usd ?? 0) - (a.protocol.mcap_usd ?? 0))
-        .slice(0, 6)
-        .map(p => p.protocol.name);
+    let benchmark: number;
+    let basis: 'category' | 'sector' | 'global';
+    let catMed: number | null = null;
+    let q1: number | null = null;
+    let q3: number | null = null;
+    let benchLow: number;
+    let benchHigh: number;
 
-      results.push({
-        category: cat,
-        peers: n,
-        median_ratio: Math.round(catMed * 10000) / 10000,
-        benchmark: Math.round(benchmark * 10000) / 10000,
-        source: 'category',
-        peer_names: topPeers,
-      });
+    if (n >= 3) {
+      const catRatios = peers.map(p => p.ratio).sort((a, b) => a - b);
+      catMed = median(catRatios);
+      const rawBench = (n * catMed + model.bench_shrink * globalMed) / (n + model.bench_shrink);
+      benchmark = clamp(rawBench, model.bench_floor, model.bench_cap);
+      basis = 'category';
+      q1 = quantile(catRatios, 0.25);
+      q3 = quantile(catRatios, 0.75);
+      benchLow = clamp((n * q1 + model.bench_shrink * globalMed) / (n + model.bench_shrink), model.bench_floor, model.bench_cap);
+      benchHigh = clamp((n * q3 + model.bench_shrink * globalMed) / (n + model.bench_shrink), model.bench_floor, model.bench_cap);
+    } else if (n > 0) {
+      const catRatios = peers.map(p => p.ratio).sort((a, b) => a - b);
+      catMed = median(catRatios);
+      const rawBench = (n * catMed + 3 * secBench) / (n + 3);
+      benchmark = clamp(rawBench, model.bench_floor, model.bench_cap);
+      basis = 'sector';
+      if (n >= 2) {
+        q1 = quantile(catRatios, 0.25);
+        q3 = quantile(catRatios, 0.75);
+        benchLow = clamp((n * q1 + 3 * secBench) / (n + 3), model.bench_floor, model.bench_cap);
+        benchHigh = clamp((n * q3 + 3 * secBench) / (n + 3), model.bench_floor, model.bench_cap);
+      } else {
+        benchLow = benchmark * 0.6;
+        benchHigh = benchmark * 1.6;
+      }
     } else {
-      results.push({
-        category: cat,
-        peers: 0,
-        median_ratio: null,
-        benchmark: Math.round(clampedGlobal * 10000) / 10000,
-        source: 'global',
-        peer_names: [],
-      });
+      benchmark = secBench;
+      const sPeersCount = (sectorPeersMap.get(sec) || []).length;
+      basis = sPeersCount > 0 ? 'sector' : 'global';
+      benchLow = benchmark * 0.6;
+      benchHigh = benchmark * 1.6;
     }
+
+    const topPeers = [...peers]
+      .sort((a, b) => (b.protocol.mcap_usd ?? 0) - (a.protocol.mcap_usd ?? 0))
+      .slice(0, 6)
+      .map(p => p.protocol.name);
+
+    results.push({
+      category: cat,
+      peers: n,
+      median_ratio: catMed !== null ? Math.round(catMed * 10000) / 10000 : null,
+      q1: q1 !== null ? Math.round(q1 * 10000) / 10000 : null,
+      q3: q3 !== null ? Math.round(q3 * 10000) / 10000 : null,
+      benchmark: Math.round(benchmark * 10000) / 10000,
+      benchmark_low: Math.round(benchLow * 10000) / 10000,
+      benchmark_high: Math.round(benchHigh * 10000) / 10000,
+      source: basis === 'global' ? 'global' : 'category',
+      basis,
+      sector: sec,
+      peer_names: topPeers,
+    });
   }
 
   // Sort by peers desc then category asc
@@ -476,12 +576,21 @@ export function categoryBenchmarks(snapshot: Snapshot, model: ModelConstants = M
     .slice(0, 6)
     .map(p => p.protocol.name);
 
+  const globalQ1 = validPeers.length >= 2 ? quantile(allRatios, 0.25) : null;
+  const globalQ3 = validPeers.length >= 2 ? quantile(allRatios, 0.75) : null;
+
   const globalEntry: CategoryBench = {
     category: '*',
     peers: validPeers.length,
     median_ratio: Math.round(globalMed * 10000) / 10000,
+    q1: globalQ1 !== null ? Math.round(globalQ1 * 10000) / 10000 : null,
+    q3: globalQ3 !== null ? Math.round(globalQ3 * 10000) / 10000 : null,
     benchmark: Math.round(clampedGlobal * 10000) / 10000,
+    benchmark_low: globalQ1 !== null ? Math.round(clamp(globalQ1, model.bench_floor, model.bench_cap) * 10000) / 10000 : Math.round(clampedGlobal * 0.6 * 10000) / 10000,
+    benchmark_high: globalQ3 !== null ? Math.round(clamp(globalQ3, model.bench_floor, model.bench_cap) * 10000) / 10000 : Math.round(clampedGlobal * 1.6 * 10000) / 10000,
     source: 'global',
+    basis: 'global',
+    sector: 'GLOBAL',
     peer_names: topGlobalPeers,
   };
 
@@ -497,7 +606,7 @@ export function impliedValue(
   asOf: string,
   bench: CategoryBench,
   model: ModelConstants = MODEL
-): { implied: number; breakdown: ImpliedBreakdown } {
+): { implied: number; value_low: number; value_high: number; confidence: 'high' | 'medium' | 'low'; breakdown: ImpliedBreakdown } {
   const g = clamp(p.change_7d ?? 0, model.growth_floor, model.growth_cap);
   const growthMultiplier = 1 + (g / 100) * model.growth_weight;
 
@@ -510,14 +619,35 @@ export function impliedValue(
   const breadthMultiplier =
     1 + model.breadth_step * Math.min(Math.max(chainCount - 1, 0), model.breadth_cap_chains);
 
-  const rawImplied = p.tvl_usd * bench.benchmark * growthMultiplier * maturityMultiplier * breadthMultiplier;
+  const baseMultiplier = growthMultiplier * maturityMultiplier * breadthMultiplier;
+  const rawImplied = p.tvl_usd * bench.benchmark * baseMultiplier;
   const implied = Math.max(1, Math.round(rawImplied));
+
+  const benchLow = bench.benchmark_low ?? Math.round(bench.benchmark * 0.6 * 10000) / 10000;
+  const benchHigh = bench.benchmark_high ?? Math.round(bench.benchmark * 1.6 * 10000) / 10000;
+
+  let value_low = Math.max(1, Math.round(p.tvl_usd * benchLow * baseMultiplier));
+  let value_high = Math.max(1, Math.round(p.tvl_usd * benchHigh * baseMultiplier));
+
+  if (value_low > implied) value_low = implied;
+  if (value_high < implied) value_high = implied;
+  value_low = Math.max(1, Math.round(value_low));
+  value_high = Math.max(value_low, Math.round(value_high));
+
+  let confidence: 'high' | 'medium' | 'low';
+  if (bench.peers >= 6) {
+    confidence = 'high';
+  } else if (bench.peers >= 3) {
+    confidence = 'medium';
+  } else {
+    confidence = 'low';
+  }
 
   const formula = `${usd(p.tvl_usd)} TVL x ${bench.benchmark.toFixed(2)} bench x ${growthMultiplier.toFixed(3)} growth x ${maturityMultiplier.toFixed(3)} maturity x ${breadthMultiplier.toFixed(2)} breadth`;
 
   const breakdown: ImpliedBreakdown = {
     bench: bench.benchmark,
-    bench_source: bench.source,
+    bench_source: bench.basis,
     peers: bench.peers,
     median_ratio: bench.median_ratio,
     growth_pct: g,
@@ -528,7 +658,7 @@ export function impliedValue(
     formula,
   };
 
-  return { implied, breakdown };
+  return { implied, value_low, value_high, confidence, breakdown };
 }
 
 /**
@@ -604,91 +734,197 @@ export function readiness(
 }
 
 /**
- * Generates actionable 5 to 7 farm steps tailored to protocol category, chain, and scale.
+ * Generates actionable 6 to 8 farm steps tailored to protocol category, chain, momentum, and scale.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null, tier: 'watchlist' | 'early'): string[] {
-  const chain = p.chains && p.chains[0] ? p.chains[0] : 'primary network';
   const chainCount = p.chains ? p.chains.length : 1;
+  const primaryChain = p.chains && p.chains[0] ? p.chains[0] : 'Ethereum';
   const name = p.name;
-  const cat = (p.category || '').toLowerCase();
+  const sec = categoryToSector(p.category);
 
   const capital =
     p.tvl_usd >= 5_000_000_000
-      ? '$250'
+      ? '$500'
       : p.tvl_usd >= 1_000_000_000
-      ? '$150'
+      ? '$250'
       : p.tvl_usd >= 100_000_000
       ? '$100'
-      : '$50';
+      : p.tvl_usd >= 20_000_000
+      ? '$50'
+      : '$25';
 
   const gasEst =
     chainCount <= 1
-      ? 'about $4 of gas'
+      ? '$3-$5 of gas'
       : chainCount <= 3
-      ? 'about $8 of gas across routes'
-      : 'about $15 of gas across multiple networks';
+      ? '$8-$12 of gas across routes'
+      : '$15-$25 of gas across multi-chain routes';
 
-  // Step 1: Wallet hygiene
-  const hygiene = `Provision a dedicated farm wallet on ${chain} funded with gas to isolate token launch qualification activities from primary treasury assets. Cost: ${gasEst}. Time: 10 minutes.`;
-
-  // Step 2: Category action
-  let action = '';
-  let actionCost = gasEst;
-  let actionTime = '15 minutes';
-
-  if (cat.includes('lend') || cat.includes('cdp')) {
-    action = `Supply ${capital} of USDC collateral into ${name} on ${chain} and borrow a conservative low-risk debt fraction to activate lender records.`;
-    actionCost = gasEst;
-    actionTime = '15 minutes';
-  } else if (cat.includes('dex') || cat.includes('yield') || cat.includes('aggregator') || cat.includes('farm')) {
-    action = `Provide ${capital} of liquidity into the deepest active pool on ${name} via ${chain} to accrue fee-generating routing volume.`;
-    actionCost = gasEst;
-    actionTime = '20 minutes';
-  } else if (cat.includes('bridge')) {
-    action = `Bridge ${capital} through ${name} into ${chain} and deploy on the destination network to establish verified cross-chain throughput.`;
-    actionCost = `bridge fee plus ${gasEst}`;
-    actionTime = '25 minutes';
-  } else if (cat.includes('stake') || cat.includes('restak')) {
-    action = `Stake ${capital} of the chain asset into ${name} on ${chain} and hold the liquid derivative receipt token in the farm wallet.`;
-    actionCost = gasEst;
-    actionTime = '15 minutes';
-  } else if (cat.includes('perp') || cat.includes('derivative') || cat.includes('option') || cat.includes('basis')) {
-    action = `Deposit ${capital} margin into ${name} on ${chain} and open a hedged delta-neutral position to accumulate trading volume.`;
-    actionCost = `trading fee plus ${gasEst}`;
-    actionTime = '20 minutes';
-  } else if (cat.includes('rwa') || cat.includes('curator') || cat.includes('allocator')) {
-    action = `Deposit ${capital} into ${name}'s institutional vault on ${chain} and hold vault shares through the qualifying period.`;
-    actionCost = gasEst;
-    actionTime = '15 minutes';
-  } else if (cat.includes('payment') || cat.includes('chain') || cat.includes('governance')) {
-    action = `Take the native action ${name} rewards on ${chain}, executing recurring transfers or delegating governance weight.`;
-    actionCost = gasEst;
-    actionTime = '15 minutes';
-  } else {
-    action = `Deposit ${capital} and interact with the primary application module of ${name} on ${chain}.`;
-    actionCost = gasEst;
-    actionTime = '15 minutes';
+  // Step 1: Wallet isolation & funding
+  let s1 = '';
+  switch (sec) {
+    case 'LENDING':
+      s1 = `Configure a dedicated collateral management wallet on ${primaryChain} funded with sufficient reserve gas.`;
+      break;
+    case 'DEX':
+      s1 = `Initialize an isolated liquidity provisioning wallet on ${primaryChain} with separated signer permissions.`;
+      break;
+    case 'BRIDGE':
+      s1 = `Prepare a clean routing wallet on ${primaryChain} with native gas reserves ready for cross-chain execution.`;
+      break;
+    case 'YIELD':
+    case 'RWA':
+      s1 = `Establish an institutional-grade sub-account on ${primaryChain} designated specifically for ${name} vault interaction.`;
+      break;
+    case 'STAKING':
+      s1 = `Set up an isolated non-custodial staking address on ${primaryChain} pre-funded for validator delegation.`;
+      break;
+    case 'CHAIN':
+      s1 = `Spin up a dedicated network participant wallet targeting ${primaryChain} with gas reserves.`;
+      break;
+    case 'PAYMENTS':
+      s1 = `Deploy an isolated state-channel operational wallet on ${primaryChain} with sufficient gas overhead.`;
+      break;
+    default:
+      s1 = `Provision a clean farming wallet on ${primaryChain} segregated from primary treasury holdings.`;
+      break;
   }
-  const actionStep = `${action} Cost: ${actionCost}. Time: ${actionTime}.`;
+  const step1 = `${s1} Cost: ${gasEst}. Time: 10 minutes.`;
 
-  // Step 3: Repeat-activity cadence
-  const cadenceStep = `Execute weekly follow-up transactions on ${chain} across a minimum of 4 distinct weeks to establish organic retention. Cost: ${gasEst}. Time: 5 minutes.`;
+  // Step 2: Risk / Pre-flight / Drawdown check
+  let step2 = '';
+  if (p.change_7d !== null && p.change_7d < -8.0) {
+    step2 = `Review the recent ${Math.abs(p.change_7d).toFixed(1)}% 7-day TVL contraction on ${primaryChain} to confirm protocol solvency, oracle feeds, and liquidation margins prior to committing deposits. Cost: $0. Time: 10 minutes.`;
+  } else {
+    switch (sec) {
+      case 'LENDING':
+        step2 = `Verify pool utilization caps and collateral liquidation parameters on ${name} before allocating borrowing capital. Cost: $0. Time: 5 minutes.`;
+        break;
+      case 'DEX':
+        step2 = `Check 24-hour pool turnover and impermanent loss volatility on ${name} to identify optimal liquidity ranges. Cost: $0. Time: 5 minutes.`;
+        break;
+      case 'BRIDGE':
+        step2 = `Confirm liquidity rebalancing depth and destination gas settlement rates across ${name}'s supported routes. Cost: $0. Time: 5 minutes.`;
+        break;
+      case 'YIELD':
+      case 'RWA':
+        step2 = `Inspect asset custodian audits and current yield composition across ${name}'s underlying strategy allocations. Cost: $0. Time: 5 minutes.`;
+        break;
+      case 'STAKING':
+        step2 = `Check active validator performance metrics, slashing safeguards, and current commission rates for ${name}. Cost: $0. Time: 5 minutes.`;
+        break;
+      case 'CHAIN':
+        step2 = `Inspect network block propagation times and current validator synchronization status for ${name}. Cost: $0. Time: 5 minutes.`;
+        break;
+      case 'PAYMENTS':
+        step2 = `Verify payment channel hub liquidity capacity and settlement finality thresholds on ${name}. Cost: $0. Time: 5 minutes.`;
+        break;
+      default:
+        step2 = `Audit smart contract verification status and recent transaction volume on ${name} via ${primaryChain} explorers. Cost: $0. Time: 5 minutes.`;
+        break;
+    }
+  }
 
-  // Step 4: Hold window that scales with age
+  // Step 3: Core on-chain category action
+  let s3 = '';
+  let s3Cost = gasEst;
+  let s3Time = '15 minutes';
+  switch (sec) {
+    case 'LENDING':
+      s3 = `Supply ${capital} of USDC into ${name} on ${primaryChain}, borrow a conservative 35% debt allocation in stablecoins, and maintain the account health factor strictly above 1.75 to prevent liquidation.`;
+      s3Time = '15 minutes';
+      break;
+    case 'DEX':
+      s3 = `Deposit ${capital} into the highest-volume paired pool on ${name} with pool depth exceeding $1M, selecting the 0.05% concentrated fee tier for stable pairs or 0.30% for volatile assets.`;
+      s3Time = '20 minutes';
+      break;
+    case 'BRIDGE':
+      s3 = `Initiate a cross-chain transfer of ${capital} from ${primaryChain} to the secondary route, bridging canonical native assets to maximize verified volume since wrapped synthetics receive lower weighting.`;
+      s3Cost = `bridge fee plus ${gasEst}`;
+      s3Time = '25 minutes';
+      break;
+    case 'YIELD':
+    case 'RWA':
+      s3 = `Deposit ${capital} into ${name}'s primary curated vault on ${primaryChain}, receive vault share tokens, and register the position while noting the protocol 7-day redemption settlement queue.`;
+      s3Time = '15 minutes';
+      break;
+    case 'STAKING':
+      s3 = `Stake ${capital} of native assets into ${name} on ${primaryChain}, select a high-uptime verified node operator, and retain the receipt token while planning around the stated 14-day unbonding window.`;
+      s3Time = '15 minutes';
+      break;
+    case 'CHAIN':
+      s3 = `Delegate ${capital} of network stake to an active community validator on ${name}, or deploy a light node instance on an external VPS to earn node qualification points.`;
+      s3Cost = `$40/month hardware or ${gasEst}`;
+      s3Time = '30 minutes';
+      break;
+    case 'PAYMENTS':
+      s3 = `Open a bidirectional payment channel on ${name} with ${capital} of committed routing liquidity, executing test transfers before closing the settlement state.`;
+      s3Cost = `channel fee plus ${gasEst}`;
+      s3Time = '20 minutes';
+      break;
+    case 'PERPS':
+      s3 = `Deposit ${capital} margin into ${name} on ${primaryChain} and establish a low-leverage delta-neutral hedged position across market contracts to generate organic maker volume.`;
+      s3Cost = `trading fees plus ${gasEst}`;
+      s3Time = '20 minutes';
+      break;
+    case 'STABLECOIN':
+      s3 = `Mint ${capital} of ${name}'s pegged asset using collateralized reserves on ${primaryChain} and stake the resulting balance in the stability module.`;
+      s3Time = '15 minutes';
+      break;
+    case 'INSURANCE':
+      s3 = `Underwrite ${capital} into ${name}'s capital protection pool on ${primaryChain} to earn premium yields while backing coverage policies.`;
+      s3Time = '15 minutes';
+      break;
+    default:
+      s3 = `Deposit ${capital} into ${name}'s core application contract on ${primaryChain} and interact with primary protocol features.`;
+      s3Time = '15 minutes';
+      break;
+  }
+  const step3 = `${s3} Cost: ${s3Cost}. Time: ${s3Time}.`;
+
+  // Step 4: Recurring cadence / volume compounding
+  let s4 = '';
+  switch (sec) {
+    case 'LENDING':
+      s4 = `Rebalance borrowed debt and compound accrued interest rewards weekly across ${chainCount > 1 ? chainCount + ' supported chains' : primaryChain} over 4 consecutive weeks.`;
+      break;
+    case 'DEX':
+      s4 = `Adjust concentrated tick ranges and harvest accumulated trading fees on a bi-weekly cycle to maintain active provider status.`;
+      break;
+    case 'BRIDGE':
+      s4 = `Execute return bridging transactions across alternating networks every two weeks to log multi-hop usage diversity.`;
+      break;
+    case 'YIELD':
+    case 'RWA':
+      s4 = `Reinvest vault yield distributions and verify share token balances monthly to demonstrate sustained participation.`;
+      break;
+    case 'STAKING':
+      s4 = `Restake accumulated validator rewards and participate in on-chain governance snapshot votes to build voter tenure.`;
+      break;
+    case 'CHAIN':
+      s4 = `Broadcast periodic transactions across testnet and mainnet contracts to demonstrate continuous user activity.`;
+      break;
+    case 'PAYMENTS':
+      s4 = `Route recurring micro-transactions through active channels over a 4-week span to build operational velocity.`;
+      break;
+    default:
+      s4 = `Perform recurring interactions on ${name} across at least 4 distinct calendar weeks to satisfy activity thresholds.`;
+      break;
+  }
+  const step4 = `${s4} Cost: ${gasEst}. Time: 10 minutes.`;
+
+  // Step 5: Holding & seasoning window
   const holdDays = age === null ? 30 : age < 180 ? 60 : age < 365 ? 45 : 30;
-  const holdStep = `Maintain the qualifying capital position in ${name} for at least ${holdDays} consecutive days to clear snapshot seasoning filters. Cost: opportunity cost of capital. Time: 5 minutes.`;
+  const step5 = `Maintain capital committed in ${name} for no less than ${holdDays} consecutive days to clear retroactive snapshot filters that purge transient capital. Cost: opportunity cost of capital. Time: 5 minutes.`;
 
-  // Step 5: Claim safety
-  const safetyStep = `Monitor claim announcements exclusively via ${name}'s published official links, bookmark verified contracts, and never pay fees to claim. Cost: $0. Time: 5 minutes.`;
+  // Step 6: Official communication & claim security
+  const step6 = `Monitor official distribution announcements exclusively through ${name}'s verified governance portal and domain; never approve unverified signatures or fee payments for airdrop claims. Cost: $0. Time: 5 minutes.`;
 
-  // Step 6: Log the position (watchlist rows)
-  const logStep = `Log the transaction hashes, deposited amounts, dates, and wallet address in a dedicated tracking spreadsheet for retroactive audit. Cost: $0. Time: 10 minutes.`;
+  // Step 7: Ledger tracking & audit log
+  const step7 = `Archive transaction hashes, deposited contract addresses, and snapshot timestamp receipts in an offline audit record to support retroactive claims dispute. Cost: $0. Time: 10 minutes.`;
 
-  const steps = tier === 'watchlist'
-    ? [hygiene, actionStep, cadenceStep, holdStep, safetyStep, logStep]
-    : [hygiene, actionStep, cadenceStep, holdStep, safetyStep];
+  const steps = [step1, step2, step3, step4, step5, step6, step7];
 
-  // Guarantee character limits [20, 600]
   return steps.map(s => {
     let trimmed = s.trim();
     if (trimmed.length > 600) {
@@ -760,6 +996,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     listed_at: string | null;
     age_days: number | null;
     implied_value_usd: number;
+    value_low_usd: number;
+    value_high_usd: number;
+    confidence: 'high' | 'medium' | 'low';
     implied_multiple: number;
     token_status: 'pre-token';
     tier: 'watchlist' | 'early';
@@ -773,7 +1012,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 
   for (const { protocol: p, tier } of candidates) {
     const bench = (p.category && benchMap.get(p.category)) || fallbackBench;
-    const { implied, breakdown } = impliedValue(p, snapshot.as_of, bench, model);
+    const { implied, value_low, value_high, confidence, breakdown } = impliedValue(p, snapshot.as_of, bench, model);
     const age = ageDays(snapshot.as_of, p.listed_at);
     const ready = readiness(p, age, bench, model);
     const steps = farmSteps(p, age, tier);
@@ -790,6 +1029,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       listed_at: p.listed_at,
       age_days: age,
       implied_value_usd: implied,
+      value_low_usd: value_low,
+      value_high_usd: value_high,
+      confidence,
       implied_multiple: multiple,
       token_status: 'pre-token',
       tier,
@@ -877,8 +1119,9 @@ export function buildRadar(
     return rest;
   });
 
-  const watchlistSize = board.filter(r => r.tier === 'watchlist').length;
+  const watchlistCovered = board.filter(r => r.tier === 'watchlist').length;
   const earlySize = board.filter(r => r.tier === 'early').length;
+  const preTokenTotal = snapshot.protocols.filter(isPreToken).length;
 
   const radar: RadarData = {
     as_of: snapshot.as_of,
@@ -887,7 +1130,9 @@ export function buildRadar(
     model,
     model_version: MODEL_VERSION,
     generated_by: 'token-radar-entry/lib/model.ts',
-    watchlist_size: watchlistSize,
+    watchlist_size: snapshot.watchlist.length,
+    watchlist_covered: watchlistCovered,
+    pre_token_total: preTokenTotal,
     board_size: board.length,
     early_size: earlySize,
     live_size: live.length,

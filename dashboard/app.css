@@ -32,6 +32,7 @@ html {
   line-height: 1.45;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
+  overflow-y: scroll;
 }
 body { min-height: 100vh; background: radial-gradient(circle at 50% 0%, #152232 0%, var(--bg-deep) 65%); }
 a { color: inherit; text-decoration: none; }
@@ -39,10 +40,10 @@ a { color: inherit; text-decoration: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
 
 .skip-link {
-  position: absolute; top: -100px; left: 16px; background: var(--val-accent); color: #000;
+  position: absolute; top: -200px; left: -9999px; background: var(--val-accent); color: #000;
   padding: 8px 16px; font-weight: 700; z-index: 9999; border-radius: 4px;
 }
-.skip-link:focus { top: 16px; }
+.skip-link:focus, .skip-link:focus-visible { top: 16px; left: 16px; }
 
 .shell {
   max-width: 1400px; width: 100%; margin: 0 auto; padding: 14px 20px 28px;
@@ -52,15 +53,15 @@ a { color: inherit; text-decoration: none; }
 /* Masthead */
 .masthead {
   background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 8px;
-  padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0;
+  padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0; position: relative; z-index: 20;
 }
-.mast-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
-.brand { display: flex; align-items: center; gap: 10px; }
+.mast-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: nowrap; gap: 12px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
 .brand-badge {
   color: var(--val-accent); background: var(--val-bg); border: 1px solid var(--val-border);
   border-radius: 6px; padding: 5px; display: flex; align-items: center; justify-content: center;
 }
-.brand-title { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
+.brand-title { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; white-space: nowrap; }
 .brand-anchor:hover { color: var(--val-accent-light); }
 .brand-title:focus:not(:focus-visible),
 .brand-anchor:focus:not(:focus-visible),
@@ -79,7 +80,7 @@ h2:focus-visible {
 }
 .brand-thesis { font-size: 12px; color: var(--text-secondary); margin-top: 1px; }
 
-.mast-nav { display: flex; gap: 6px; }
+.mast-nav { display: flex; gap: 6px; flex-shrink: 0; }
 .nav-btn {
   display: inline-flex; align-items: center; padding: 5px 12px; font-size: 11px; font-weight: 600;
   letter-spacing: 0.03em; text-transform: uppercase; color: var(--text-secondary); background: var(--bg-surface);
@@ -169,7 +170,7 @@ h2:focus-visible {
 
 .badge-tier { font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 4px; border-radius: 3px; flex-shrink: 0; }
 .tier-watchlist { background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); }
-.tier-early { background: rgba(14, 165, 233, 0.15); color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.3); }
+.tier-candidate, .tier-early { background: rgba(14, 165, 233, 0.15); color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.3); }
 
 .chains-cell { display: flex; flex-wrap: nowrap; gap: 3px; align-items: center; overflow: hidden; min-width: 0; }
 .chain-chip {

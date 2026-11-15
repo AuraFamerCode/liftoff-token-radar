@@ -45,15 +45,11 @@
   }
 
   function computeDeriv(row, bench) {
-    const g = Math.min(100, Math.max(-50, row.change_7d ?? 0));
-    const growthMult = 1 + (g / 100) * 0.30;
-    const age = row.age_days ?? 365;
-    const maturityMult = 0.70 + (0.30 * Math.min(age, 1460)) / 1460;
-    const chainCount = row.chains?.length || 1;
-    const breadthMult = 1 + 0.03 * Math.min(Math.max(chainCount - 1, 0), 4);
+    const g = Math.min(100, Math.max(-50, row.change_7d ?? 0)), growthMult = 1 + (g / 100) * 0.30;
+    const age = row.age_days ?? 365, maturityMult = 0.70 + (0.30 * Math.min(age, 1460)) / 1460;
+    const chainCount = row.chains?.length || 1, breadthMult = 1 + 0.03 * Math.min(Math.max(chainCount - 1, 0), 4);
     const implied = Math.max(1, Math.round(row.tvl_usd * bench.benchmark * growthMult * maturityMult * breadthMult));
-    const formula = `${fmtMoney(row.tvl_usd)} TVL × ${bench.benchmark.toFixed(2)} bench × ${growthMult.toFixed(3)} growth × ${maturityMult.toFixed(3)} maturity × ${breadthMult.toFixed(2)} breadth`;
-    return { bench, g, growthMult, age, maturityMult, chainCount, breadthMult, implied, formula };
+    return { bench, g, growthMult, age, maturityMult, chainCount, breadthMult, implied, formula: `${fmtMoney(row.tvl_usd)} TVL × ${bench.benchmark.toFixed(2)} bench × ${growthMult.toFixed(3)} growth × ${maturityMult.toFixed(3)} maturity × ${breadthMult.toFixed(2)} breadth` };
   }
 
   function computeReadiness(row) {
@@ -65,26 +61,81 @@
     const distribution = Math.min(1, Math.max(0, (row.chains?.length || 1) / 4));
 
     const cat = (row.category || '').toLowerCase();
-    const highFee = ['dex', 'lending', 'lend', 'perpetual', 'derivative', 'yield', 'curator', 'cdp', 'liquidity', 'aggregator', 'basis'];
-    const midFee = ['rwa', 'chain', 'payments', 'governance', 'insurance', 'stable'];
-    const fee_engine = highFee.some(k => cat.includes(k)) ? 1.0 : midFee.some(k => cat.includes(k)) ? 0.45 : 0.25;
+    const fee_engine = /dex|lend|perpetual|derivative|yield|curator|cdp|liquidity|aggregator|basis/.test(cat) ? 1.0 : /rwa|chain|payments|governance|insurance|stable/.test(cat) ? 0.45 : 0.25;
 
     const weights = { track_record: 0.30, scale: 0.25, growth: 0.20, distribution: 0.15, fee_engine: 0.10 };
     const raw = 100 * (track_record * 0.30 + scale * 0.25 + growth * 0.20 + distribution * 0.15 + fee_engine * 0.10);
     return { score: Math.min(100, Math.max(0, Math.round(raw))), parts: { track_record, scale, growth, distribution, fee_engine }, weights };
   }
 
-  function parseStep(text) {
-    const cMatch = text.match(/Cost:\s*([^.]+\.)/i);
-    const tMatch = text.match(/Time:\s*([^.]+\.?)/i);
-    let clean = text;
-    if (cMatch) clean = clean.replace(cMatch[0], '');
-    if (tMatch) clean = clean.replace(tMatch[0], '');
-    return {
-      text: clean.trim().replace(/\s{2,}/g, ' '),
-      cost: cMatch ? cMatch[0].trim() : 'Cost: gas only.',
-      time: tMatch ? tMatch[0].trim() : 'Time: 10 minutes.'
-    };
+  function parseStep(t) {
+    const c = t.match(/Cost:\s*([^.]+\.)/i), tm = t.match(/Time:\s*([^.]+\.?)/i);
+    let txt = t;
+    if (c) txt = txt.replace(c[0], '');
+    if (tm) txt = txt.replace(tm[0], '');
+    return { text: txt.trim().replace(/\s{2,}/g, ' '), cost: c ? c[0].trim() : 'Cost: gas only.', time: tm ? tm[0].trim() : 'Time: 10 minutes.' };
+  }
+
+  const CAND_TITLE = 'launch candidate the house watchlist does not name — the snapshot rule left it out (a parent, wrapped or staked product, bridge, exchange record or version marker); it is ranked on the same model';
+
+  // Derived directly in the client to ensure visible, deterministic farm planning
+  function farmPlan(r) {
+    const n = r.name || 'protocol', ch = (r.chains && r.chains[0]) || 'Ethereum', cn = (r.chains && r.chains.length) || 1;
+    const tvl = r.tvl_usd || 0, age = r.age_days, c = (r.category || '').toLowerCase();
+    const cap = tvl >= 5e8 ? '$2,500–$10,000' : tvl >= 5e7 ? '$1,000–$2,500' : '$250–$500';
+    const gas = cn > 2 ? '~$5–$15 multichain gas' : '~$3–$8 L1/L2 gas';
+    const hold = age === null ? 30 : age < 180 ? 60 : age < 365 ? 45 : 30;
+
+    let act = `Deposit ${cap} into ${n}'s core contract on ${ch} to establish verified tenure.`;
+    if (/lend|borrow|cdp/.test(c)) act = `Supply ${cap} collateral into ${n} on ${ch} and borrow debt maintaining health factor > 1.8.`;
+    else if (/dex|swap|amm/.test(c)) act = `Deposit ${cap} into a pool on ${n} on ${ch} selecting concentrated fee tiers.`;
+    else if (/yield|curator|vault|rwa/.test(c)) act = `Deposit ${cap} into ${n}'s primary vault on ${ch} registering share tokens.`;
+    else if (/bridge|cross/.test(c)) act = `Bridge ${cap} of canonical assets through ${n} from ${ch} to log multi-hop volume.`;
+    else if (/stak/.test(c)) act = `Stake ${cap} into ${n} on ${ch} with a verified validator node retaining receipt tokens.`;
+
+    const s = [
+      `Fund a dedicated non-custodial wallet on ${ch} with native gas tokens; avoid mixing sybil addresses. Cost: ${gas}. Time: 10 minutes.`,
+      `Audit smart contract verification status and liquidity depth on ${n} via ${ch} explorer. Cost: $0. Time: 5 minutes.`,
+      `${act} Cost: ${gas}. Time: 15 minutes.`,
+      `Execute periodic interactions on ${n} across ${cn > 1 ? cn + ' supported chains' : ch} over 4 consecutive weeks to log recurring usage. Cost: ${gas}. Time: 10 minutes.`,
+      `Maintain committed capital in ${n} for at least ${hold} consecutive days to satisfy retroactive seasoning thresholds. Cost: capital opportunity cost. Time: 5 minutes.`,
+      `Track official claim announcements exclusively through ${n}'s verified domain; never approve unverified signatures or claim fees. Cost: $0. Time: 5 minutes.`,
+      `Archive transaction receipts, contract addresses, and snapshot timestamp proofs in an offline ledger for claim verification. Cost: $0. Time: 10 minutes.`
+    ];
+    if (r.change_7d !== null && r.change_7d < -8) {
+      s.splice(3, 0, `Caution: ${n} recorded a ${r.change_7d.toFixed(1)}% 7-day TVL contraction; verify pool solvency and reduce margin exposure before committing new capital. Cost: $0. Time: 5 minutes.`);
+    }
+    return s;
+  }
+
+  function peerBadge(r, R) {
+    const b = findBench(R, r.category), p = b.peers ?? 0, conf = r.confidence || 'low';
+    let label = `${p} peer${p === 1 ? '' : 's'}`;
+    if (b.basis === 'sector') label = p > 0 ? `sector · ${p} peer${p === 1 ? '' : 's'}` : 'no peers · sector';
+    else if (b.basis === 'global') label = 'no peers · global';
+
+    let title = `${p} traded peer${p === 1 ? '' : 's'} (${b.basis} benchmark)`;
+    if (b.basis === 'sector') title = `Category had ${p} traded peer${p === 1 ? '' : 's'}; benchmark shrunk to ${b.sector} sector with widened band`;
+    else if (conf === 'high') title = `${p} traded comps in category; tight quartile band`;
+    else if (conf === 'low') title = `Sparse comps (<3 peers); valuation band widened 0.6x–1.6x`;
+
+    return { label, title, conf, basis: b.basis, peers: p, sector: b.sector };
+  }
+
+  function impliedCell(r, R) {
+    const low = r.value_low_usd ?? r.implied_value_usd, high = r.value_high_usd ?? r.implied_value_usd;
+    const dot = Math.min(100, Math.max(0, Math.round(((r.implied_value_usd - low) / Math.max(1, high - low)) * 100)));
+    const pb = peerBadge(r, R);
+    return el('div', { className: 'val-cell' },
+      el('div', { className: 'val-top-row' },
+        el('span', { className: 'val-main' }, fmtMoney(r.implied_value_usd)),
+        el('span', { className: `conf-chip conf-${pb.conf}`, title: pb.title }, pb.label)
+      ),
+      el('div', { className: 'range-sub-row', title: `Range: ${fmtMoney(low)} .. ${fmtMoney(high)}` },
+        el('div', { className: 'range-bar-track' }, el('div', { className: 'range-bar-dot', style: `left: ${dot}%;` })),
+        el('span', { className: 'val-sub' }, `${fmtMoney(low)}–${fmtMoney(high)}`)
+      )
+    );
   }
 
   function defaultBoardFilters() {
@@ -108,7 +159,10 @@
     if (p.has('q')) state.boardFilters.q = p.get('q') || '';
     if (p.has('cat')) state.boardFilters.cat = p.get('cat') || 'all';
     if (p.has('chain')) state.boardFilters.chain = p.get('chain') || 'all';
-    if (p.has('tier')) state.boardFilters.tier = p.get('tier') || 'all';
+    if (p.has('tier')) {
+      const t = (p.get('tier') || 'all').toLowerCase();
+      state.boardFilters.tier = (t === 'early' || t === 'candidate') ? 'candidate' : (t === 'watchlist' ? 'watchlist' : 'all');
+    }
     if (p.has('min')) state.boardFilters.min = p.get('min') || '0';
     if (p.has('sort')) state.boardFilters.sort = p.get('sort') || 'implied';
     if (p.has('dir')) {
@@ -117,20 +171,22 @@
     }
   }
 
-  function updateActiveNav(active) {
-    ['board', 'live', 'method'].forEach(name => {
-      const b = document.getElementById('nav-' + name);
-      if (b) b.className = 'nav-btn' + (active === name ? ' is-active' : '');
+  function updateActiveNav(a) {
+    ['board', 'live', 'method'].forEach(n => {
+      const b = document.getElementById('nav-' + n);
+      if (b) b.className = 'nav-btn' + (a === n ? ' is-active' : '');
     });
   }
 
   function focusMainHeading() {
+    window.scrollTo(0, 0);
     if (isInitialLoad) return;
     const h = document.querySelector('main h2, main h1, h1');
     if (h) {
       h.setAttribute('tabindex', '-1');
-      h.focus();
+      h.focus({ preventScroll: true });
     }
+    window.scrollTo(0, 0);
   }
 
   function selField(id, label, val, opts, onChg) {
@@ -145,10 +201,9 @@
   function renderMissingDataView() {
     document.title = 'Missing Data — Lift-off';
     const c = document.getElementById('view-container');
-    c.replaceChildren();
-    c.appendChild(el('div', { className: 'detail-card empty-view' },
+    c.replaceChildren(el('div', { className: 'detail-card empty-view' },
       el('h2', { tabindex: '-1' }, 'Dataset Not Found'),
-      el('p', {}, 'data.js could not be loaded beside dashboard/index.html. Run main.ts to build snapshot data.'),
+      el('p', {}, 'data.js missing beside dashboard/index.html.'),
       el('div', { className: 'formula-box' }, 'mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input /tmp/tr-snapshot.json')
     ));
     focusMainHeading();
@@ -166,7 +221,8 @@
     const qLower = f.q.trim().toLowerCase(), minTvl = parseFloat(f.min) || 0;
 
     let rows = R.rows.filter(r => {
-      if (f.tier !== 'all' && r.tier !== f.tier) return false;
+      if (f.tier === 'watchlist' && r.tier !== 'watchlist') return false;
+      if (f.tier === 'candidate' && r.tier === 'watchlist') return false;
       if (f.cat !== 'all' && r.category !== f.cat) return false;
       if (f.chain !== 'all' && (!r.chains || !r.chains.includes(f.chain))) return false;
       if (r.tvl_usd < minTvl) return false;
@@ -182,17 +238,8 @@
 
     const dirMult = f.dir === 'asc' ? 1 : -1;
     rows.sort((a, b) => {
-      let cmp = 0;
-      switch (f.sort) {
-        case 'rank': cmp = a.rank - b.rank; break;
-        case 'implied': cmp = a.implied_value_usd - b.implied_value_usd; break;
-        case 'tvl': cmp = a.tvl_usd - b.tvl_usd; break;
-        case 'growth': cmp = (a.change_7d ?? -999) - (b.change_7d ?? -999); break;
-        case 'age': cmp = (a.age_days ?? 0) - (b.age_days ?? 0); break;
-        case 'readiness': cmp = readyMap.get(a.slug).score - readyMap.get(b.slug).score; break;
-        case 'name': cmp = (a.name || '').localeCompare(b.name || ''); break;
-        default: cmp = a.implied_value_usd - b.implied_value_usd;
-      }
+      const S = { rank: a.rank - b.rank, implied: a.implied_value_usd - b.implied_value_usd, tvl: a.tvl_usd - b.tvl_usd, growth: (a.change_7d ?? -999) - (b.change_7d ?? -999), age: (a.age_days ?? 0) - (b.age_days ?? 0), readiness: readyMap.get(a.slug).score - readyMap.get(b.slug).score, name: (a.name || '').localeCompare(b.name || '') };
+      const cmp = S[f.sort] ?? S.implied;
       return (cmp !== 0 ? cmp * dirMult : a.rank - b.rank);
     });
 
@@ -209,7 +256,7 @@
       ),
       selField('ctrl-cat', 'Category', f.cat, [['all', 'All Categories'], ...R.categories.map(c => [c, c])], (e) => { f.cat = e.target.value; renderBoardView(); }),
       selField('ctrl-chain', 'Chain', f.chain, [['all', 'All Chains'], ...R.chains.map(c => [c, c])], (e) => { f.chain = e.target.value; renderBoardView(); }),
-      selField('ctrl-tier', 'Tier', f.tier, [['all', 'All Tiers'], ['watchlist', 'Watchlist (Floor)'], ['early', 'Early Candidates']], (e) => { f.tier = e.target.value; renderBoardView(); }),
+      selField('ctrl-tier', 'Tier', f.tier === 'early' ? 'candidate' : f.tier, [['all', 'All Tiers'], ['watchlist', 'Watchlist'], ['candidate', 'Candidate']], (e) => { f.tier = e.target.value; renderBoardView(); }),
       selField('ctrl-min', 'Min TVL', f.min, [['0', 'All Scales'], ['10000000', '≥ $10M'], ['50000000', '≥ $50M'], ['100000000', '≥ $100M'], ['250000000', '≥ $250M'], ['1000000000', '≥ $1B']], (e) => { f.min = e.target.value; renderBoardView(); }),
       selField('ctrl-sort', 'Sort', f.sort, [['implied', 'Implied Value'], ['rank', 'Rank'], ['tvl', 'TVL'], ['growth', '7d Growth'], ['readiness', 'Readiness'], ['age', 'Age without Token'], ['name', 'Name']], (e) => { f.sort = e.target.value; renderBoardView(); }),
       el('button', {
@@ -296,7 +343,7 @@
             el('div', { className: 'proto-cell' },
               el('div', { className: 'proto-title-row' },
                 el('span', { className: 'proto-name', title: row.name }, row.name),
-                el('span', { className: `badge-tier tier-${row.tier}` }, row.tier === 'watchlist' ? 'Watchlist' : 'Early')
+                el('span', { className: row.tier === 'watchlist' ? 'badge-tier tier-watchlist' : 'badge-tier tier-candidate', ...(row.tier === 'watchlist' ? {} : { title: CAND_TITLE }) }, row.tier === 'watchlist' ? 'Watchlist' : 'Candidate')
               ),
               el('div', { className: 'proto-meta', title: catTitle }, el('span', {}, catTitle))
             )
@@ -305,12 +352,7 @@
           el('td', { className: 'col-tvl num-cell' }, fmtMoney(row.tvl_usd)),
           el('td', { className: 'col-7d' }, el('span', { className: `growth-pill ${growthCls}` }, fmtPct(row.change_7d))),
           el('td', { className: 'col-age num-cell' }, fmtAge(row.age_days)),
-          el('td', { className: 'col-implied' },
-            el('div', { className: 'val-cell' },
-              el('span', { className: 'val-main' }, fmtMoney(row.implied_value_usd)),
-              el('span', { className: 'val-sub' }, `${row.implied_multiple.toFixed(2)}x TVL`)
-            )
-          ),
+          el('td', { className: 'col-implied' }, impliedCell(row, R)),
           el('td', { className: 'col-ready' },
             el('div', { className: 'mini-meter', title: `Launch Readiness: ${ready.score}/100` },
               el('div', { className: 'mini-meter-bar' }, el('div', { className: 'mini-meter-fill', style: `width: ${ready.score}%;` })),
@@ -352,6 +394,16 @@
     const bench = findBench(R, row.category);
     const deriv = computeDeriv(row, bench), ready = computeReadiness(row);
 
+    const pb = peerBadge(row, R);
+    let rangeDesc = `${fmtMoney(row.value_low_usd)} to ${fmtMoney(row.value_high_usd)} (${pb.label} benchmark). `;
+    if (bench.basis === 'sector') {
+      rangeDesc += `Category "${row.category || 'Unknown'}" had too few traded peers (${pb.peers} peer${pb.peers === 1 ? '' : 's'}); benchmark fell back to the ${bench.sector || 'sector'} sector.`;
+    } else if (bench.basis === 'category') {
+      rangeDesc += `Derived from ${pb.peers} peer${pb.peers === 1 ? '' : 's'} in the ${row.category || 'General'} category.`;
+    } else {
+      rangeDesc += `Fallback to global cross-universe median.`;
+    }
+
     const mCard = (k, v, hl) => el('div', { className: 'metric-card' + (hl ? ' highlight' : '') }, el('span', { className: 'metric-card-k' }, k), el('span', { className: 'metric-card-v' }, v));
 
     const view = el('div', { className: 'detail-view' },
@@ -370,7 +422,7 @@
           el('div', { className: 'detail-title-group' },
             el('div', { className: 'detail-title-row' },
               el('h2', { className: 'detail-title', tabindex: '-1' }, row.name),
-              el('span', { className: `badge-tier tier-${row.tier}` }, row.tier === 'watchlist' ? 'Watchlist' : 'Early Candidate'),
+              el('span', { className: row.tier === 'watchlist' ? 'badge-tier tier-watchlist' : 'badge-tier tier-candidate', ...(row.tier === 'watchlist' ? {} : { title: CAND_TITLE }) }, row.tier === 'watchlist' ? 'Watchlist' : 'Candidate'),
               el('span', { className: 'rank-badge' }, `#${row.rank}`)
             ),
             el('div', { className: 'detail-meta-row', title: `Category: ${row.category || 'Uncategorized'} | Chains: ${(row.chains || []).join(', ')}` },
@@ -390,6 +442,10 @@
         el('div', { className: 'detail-why-box' },
           el('strong', {}, 'Thesis: '),
           row.why || `${fmtMoney(row.tvl_usd)} TVL with proven track record and no token recorded.`
+        ),
+        el('div', { className: 'detail-range-box' },
+          el('strong', {}, 'Valuation Range: '),
+          rangeDesc
         )
       ),
       el('div', { className: 'metrics-strip' },
@@ -414,7 +470,8 @@
           dRow('7-Day TVL Velocity Tilt', `clamped ${deriv.g.toFixed(1)}% × 0.30`, `${deriv.growthMult.toFixed(3)}x`),
           dRow('Tenure Seasoning (No Token)', `${deriv.age}d unissued (cap 1,460d)`, `${deriv.maturityMult.toFixed(3)}x`),
           dRow('Distribution Breadth', `${deriv.chainCount} chain(s)`, `${deriv.breadthMult.toFixed(3)}x`),
-          dRow(el('strong', {}, 'Implied Valuation'), `${row.implied_multiple.toFixed(2)}x TVL`, el('strong', {}, fmtMoney(row.implied_value_usd)), 'derivation-result-row')
+          dRow(el('strong', {}, 'Implied Valuation'), `${row.implied_multiple.toFixed(2)}x TVL`, el('strong', {}, fmtMoney(row.implied_value_usd)), 'derivation-result-row'),
+          dRow('Valuation Range (Q1–Q3)', `${pb.label} (${bench.basis || 'category'})`, `${fmtMoney(row.value_low_usd)} – ${fmtMoney(row.value_high_usd)}`)
         )
       ),
       el('div', { className: 'formula-box' }, deriv.formula)
@@ -456,7 +513,7 @@
       el('div', { className: 'readiness-meter-total' },
         el('div', { className: 'readiness-big-score' }, ready.score),
         el('div', {},
-          el('strong', {}, ready.score >= 70 ? 'High Launch Propensity' : ready.score >= 50 ? 'Moderate Seasoning' : 'Early Incubation'),
+          el('strong', {}, ready.score >= 70 ? 'High Launch Propensity' : ready.score >= 50 ? 'Moderate Seasoning' : 'Incubation Phase'),
           el('p', { className: 'text-muted', style: 'font-size: 12px; margin-top: 2px;' }, 'Weighted blend of tenure, scale, velocity, multi-chain footprint, and fee mechanics.')
         )
       ),
@@ -469,9 +526,10 @@
       )
     ));
 
+    const steps = farmPlan(row);
     grid2.appendChild(el('div', { className: 'detail-card' },
-      el('h3', { className: 'card-title' }, 'Protocol Farm Plan', el('span', { className: 'val-sub' }, `${row.farm_steps?.length || 0} Steps`)),
-      el('ol', { className: 'farm-steps-list' }, (row.farm_steps || []).map((step, idx) => {
+      el('h3', { className: 'card-title' }, 'Protocol Farm Plan', el('span', { className: 'val-sub' }, `${steps.length} Steps`)),
+      el('ol', { className: 'farm-steps-list' }, steps.map((step, idx) => {
         const p = parseStep(step);
         return el('li', { className: 'farm-step-item' },
           el('div', { className: 'farm-step-header' },
@@ -509,13 +567,16 @@
     container.appendChild(el('div', { className: 'method-view' },
       el('div', { className: 'method-section' },
         el('h2', { tabindex: '-1' }, 'Quantitative Valuation Methodology'),
-        el('p', {}, 'Lift-off rejects flat TVL multiples. Cross-chain bridges, AMMs, and lending markets carry distinct economic fee capture. Implied valuation is calibrated directly against traded peers.'),
-        el('h3', {}, '1. Traded Peer Comps with Empirical Bayes Shrinkage'),
-        el('p', {}, 'For every protocol with mcap_usd > 0 and tvl_usd > 0, we measure mcap_usd / tvl_usd. Outliers outside [0.02, 12] are pruned. For thin categories, we shrink the median toward the global median (K = 4):'),
-        el('div', { className: 'method-formula-card' }, 'bench = (n * median_ratio + K * global_median) / (n + K)\nwhere K = 4 shrinkage factor, clamped to [0.05, 3.5]')
+        el('p', {}, 'The watchlist serves as the established capital floor, and the board comprehensively ranks every pre-token launch candidate the snapshot records. Protocols carry either a Watchlist badge (meeting the house capital floor) or a Candidate badge (launch candidate the house watchlist does not name — the snapshot rule left it out; it is ranked on the same model). Implied valuation is calibrated directly against traded peers rather than flat multiples.'),
+        el('h3', {}, '1. Traded Peer Benchmark & Empirical Bayes Shrinkage'),
+        el('p', {}, 'For every protocol with mcap_usd > 0 and tvl_usd > 0, we measure mcap_usd / tvl_usd. Outliers outside [0.02, 12] are pruned. For thin categories, the empirical Bayes shrinkage formula bench = (n * median_ratio + K * global_median) / (n + K) with K = 4 pulls small samples toward the global cross-universe median (clamped to [0.05, 3.5]).'),
+        el('h3', {}, '2. Valuation Bands & Empirical Peer Depth'),
+        el('p', {}, 'Each valuation includes an uncertainty range bounded by value_low_usd and value_high_usd derived from the 25th (Q1) and 75th (Q3) percentiles of traded peer multiples. Robust categories with 6+ traded peers produce tight interquartile bands. Moderate categories with 3–5 peers shrink toward the sector median. When comps are few or absent (<3 peers), the benchmark falls back to sector clusters, and sparse samples (<2 peers) widen the range by 0.6x low and 1.6x high to reflect wider dispersion.'),
+        el('h3', {}, '3. Sector Fallback with Weighted Blending'),
+        el('p', {}, 'When a specific category has fewer than 3 traded comps, the benchmark smoothly incorporates the broader sector fallback across 12 sector clusters via weighted blend (n * cat_median + 3 * sector_benchmark) / (n + 3). If sector data is also missing, it defaults to the global universe median.')
       ),
       el('div', { className: 'method-section' },
-        el('h3', {}, '2. Velocity Tilt, Tenure Seasoning, and Multi-chain Breadth'),
+        el('h3', {}, '4. Velocity Tilt, Tenure Seasoning, and Multi-chain Breadth'),
         el('div', { className: 'method-formula-card' },
           'growthMult   = 1 + (clamp(change_7d, -50%, +100%) / 100) * 0.30\n' +
           'maturityMult = 0.70 + 0.30 * min(age_days, 1460) / 1460   (age null defaults to 365d)\n' +
@@ -525,7 +586,7 @@
         el('p', {}, 'Doubling TVL in 7 days adds a 30% premium. Running unissued for years rewards proven protocol-market fit up to 4 years. Multi-chain deployment adds up to 12%.')
       ),
       el('div', { className: 'method-section' },
-        el('h3', {}, '3. Independent Launch Readiness Score (0..100)'),
+        el('h3', {}, '5. Independent Launch Readiness Score (0..100)'),
         el('div', { className: 'method-formula-card' },
           'Readiness = 100 * (0.30 * age/1460 + 0.25 * scale + 0.20 * growth + 0.15 * distribution + 0.10 * fee_engine)'
         ),
@@ -576,14 +637,8 @@
 
     const dirMult = f.dir === 'asc' ? 1 : -1;
     list.sort((a, b) => {
-      let cmp = 0;
-      switch (f.sort) {
-        case 'mcap': cmp = a.mcap_usd - b.mcap_usd; break;
-        case 'tvl': cmp = a.tvl_usd - b.tvl_usd; break;
-        case 'ratio': cmp = a.ratio - b.ratio; break;
-        case 'name': cmp = a.name.localeCompare(b.name); break;
-        default: cmp = a.mcap_usd - b.mcap_usd;
-      }
+      const S = { mcap: a.mcap_usd - b.mcap_usd, tvl: a.tvl_usd - b.tvl_usd, ratio: a.ratio - b.ratio, name: a.name.localeCompare(b.name) };
+      const cmp = S[f.sort] ?? S.mcap;
       return cmp !== 0 ? cmp * dirMult : a.slug.localeCompare(b.slug);
     });
 
@@ -659,10 +714,12 @@
       const R = state.radar;
       const setVal = (id, v) => { const n = document.getElementById(id); if (n) n.textContent = v; };
       setVal('stat-asof', R.as_of || '—');
-      setVal('stat-read', '758 protocols');
+      setVal('stat-read', `${R.snapshot_total || 758} protocols`);
       setVal('stat-floor', fmtMoney(R.floor_usd || 50000000));
-      setVal('stat-watch', `${R.watchlist_size || 40} slugs`);
-      setVal('stat-board', `${R.board_size || 196} pre-token`);
+      const cov = `${R.watchlist_covered || R.watchlist_size || 40}/${R.watchlist_size || 40}`;
+      const isFull = (R.watchlist_covered || 0) >= (R.watchlist_size || 40);
+      setVal('stat-watch', isFull ? `${cov} ✓` : cov);
+      setVal('stat-board', `${R.board_size || 196} of ${R.pre_token_total || 342} pre-token`);
       setVal('stat-live', `${R.live_size || 40} comps`);
       setVal('stat-ver', R.model_version || 'lift-off-1');
 
@@ -674,12 +731,8 @@
     route();
     isInitialLoad = false;
 
-    window.addEventListener('hashchange', () => {
-      route();
-    });
-    window.addEventListener('popstate', () => {
-      route();
-    });
+    window.addEventListener('hashchange', route);
+    window.addEventListener('popstate', route);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
