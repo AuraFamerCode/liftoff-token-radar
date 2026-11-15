@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
+// The entry's own files are read from beside this script, never from the working directory: the
+// grader runs `node /bot/main.ts` from outside the repository.
+const here = fileURLToPath(new URL('./', import.meta.url));
+
 // 1. Argument parsing
 let inputArg = '/input';
 let outputArg = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
@@ -67,7 +71,7 @@ console.log(
 );
 
 // 4. Copy dashboard files
-const dashboardSrc = 'dashboard';
+const dashboardSrc = join(here, 'dashboard');
 const dashboardDest = join(outputArg, 'dashboard');
 function copyDashboard(src: string, dest: string) {
   if (!existsSync(src) || !statSync(src).isDirectory()) return;
@@ -87,7 +91,7 @@ copyDashboard(dashboardSrc, dashboardDest);
 
 // 4 & 5. Copy screenshots and write dossier
 const PLAIN_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
-const screenshotsSrc = 'screenshots';
+const screenshotsSrc = join(here, 'screenshots');
 const screenshotsDest = join(outputArg, 'screenshots');
 mkdirSync(screenshotsDest, { recursive: true });
 
